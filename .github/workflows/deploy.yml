@@ -1,0 +1,30 @@
+name: Deploy to Home Server
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Sync files to Playground
+        run: |
+          # 1. 배포할 폴더가 없으면 생성
+          mkdir -p ~/playground/node-anatomy
+
+          # 2. rsync로 파일 동기화 (기존 파일 덮어쓰기)
+          # .git, node_modules 등 불필요한 건 제외
+          rsync -av --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'node_modules' \
+            --exclude 'dist' \
+            --exclude '.env' \
+            ./ ~/playground/node-anatomy/
+          
+          echo "🎉 배포 성공! 코드가 ~/playground/node-anatomy 로 이동되었습니다."
