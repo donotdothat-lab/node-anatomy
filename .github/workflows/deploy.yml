@@ -29,9 +29,13 @@ jobs:
 
           echo "🎉 배포 성공! 코드가 ~/playground/node-anatomy 로 이동되었습니다."
 
-      - name: Restart Application
+      - name: Install Dependencies & Restart
         run: |
+          echo "📦 의존성 설치 중..."
+          # 컨테이너 내부에서 pnpm install 실행
+          docker exec anatomy-api-dev pnpm install
+
           echo "🔄 컨테이너 재시작 중..."
-          # 이전에 docker-compose.yml에서 설정한 container_name 사용
           docker restart anatomy-api-dev
-          echo "🚀 재시작 완료! 새로운 코드가 반영되었습니다."
+
+          echo "🚀 배포 완료!"
