@@ -32,8 +32,8 @@ jobs:
       - name: Install Dependencies & Restart
         run: |
           echo "📦 의존성 설치 중..."
-          # 컨테이너 내부에서 pnpm install 실행
-          docker exec anatomy-api-dev pnpm install
+          # [-e CI=true] 옵션 추가: 대화형 질문 없이 강제 진행 모드 활성화
+          docker exec -e CI=true anatomy-api-dev pnpm install
 
           echo "🔄 컨테이너 재시작 중..."
           docker restart anatomy-api-dev
