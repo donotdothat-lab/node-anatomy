@@ -118,23 +118,32 @@ export class ParserService {
           return;
         }
 
-        // [C] Promise.then 발견!
+        // [C] Promise 체이닝 감지 (.then / .catch / .finally)
         if (
           node.callee.type === 'MemberExpression' &&
-          node.callee.property.name === 'then'
+          (node.callee.property.name === 'then' ||
+            node.callee.property.name === 'catch' ||
+            node.callee.property.name === 'finally')
         ) {
           const id = `async-${++asyncTaskCounter}`;
+
+          // 먼저 안쪽(이전 체인)으로 파고들기
+          // 이렇게 해야 이전 .then() 들이 먼저 배열에 담기게 됨.
+          c(node.callee.object, state);
+
+          // 돌아오면 기록
+          const methodName = `Promise.${node.callee.property.name}`;
+
           executionPlan.push({
             id,
             type: 'MicroTask',
             priority: 'Normal',
-            name: 'Promise.then',
+            name: methodName,
             line: node.loc.start.line,
           });
 
           const nextState = { runContext: 'AsyncCallback', parentId: id };
 
-          c(node.callee, state); // Promise.resolve() 부분 탐색
           node.arguments.forEach((arg) => {
             if (
               arg.type === 'ArrowFunctionExpression' ||
