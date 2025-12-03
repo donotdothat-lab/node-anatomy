@@ -15,7 +15,7 @@ export class ParserService {
         ecmaVersion: 2025,
         locations: true, // 코드의 위치 정보 포함
       });
-      const analysis = this.analyzedAsyncPatterns(ast);
+      const analysis = this.analyzeExecutionFlow(ast);
 
       return {
         success: true,
@@ -31,7 +31,7 @@ export class ParserService {
     }
   }
 
-  private analyzedAsyncPatterns(ast: any) {
+  private analyzeExecutionFlow(ast: any) {
     const executionPlan: any = [];
 
     // AST 순회하며 CallExpression 찾기
@@ -45,6 +45,7 @@ export class ParserService {
             name: 'setTimeout',
             line: node.loc.start.line,
           });
+          return;
         }
 
         // 2. process.nextTick 감지(MicroTask - High Priority)
@@ -59,6 +60,7 @@ export class ParserService {
             name: 'process.nextTick',
             line: node.loc.start.line,
           });
+          return;
         }
 
         // 3. Promise 감지 (MicroTask)
@@ -74,7 +76,23 @@ export class ParserService {
             name: 'Promise.then',
             line: node.loc.start.line,
           });
+          return;
         }
+
+        // 4. 동기(Sync) 작업
+        let functionName = 'Anonymous';
+
+        if (node.callee.type === 'Identifier') {
+          functionName = node.callee.name;
+        } else if (node.callee.type === 'MemberExpression') {
+          functionName = `${node.callee.object.name}.${node.callee.property.name}`;
+        }
+
+        executionPlan.push({
+          type: 'CallStack',
+          name: functionName,
+          line: node.loc.start.line,
+        });
       },
     });
     return executionPlan;
