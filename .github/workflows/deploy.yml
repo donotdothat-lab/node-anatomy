@@ -34,7 +34,7 @@ jobs:
         run: |
           echo "📦 의존성 설치 중..."
           # [-e CI=true] 옵션 추가: 대화형 질문 없이 강제 진행 모드 활성화
-          docker exec -e CI=true anatomy-api-dev pnpm install
+          docker exec -e CI=true anatomy-api-dev pnpm install --jobs=1
 
           echo "🔄 컨테이너 재시작 중..."
           docker restart anatomy-api-dev
