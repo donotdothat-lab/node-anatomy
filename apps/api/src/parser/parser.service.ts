@@ -32,69 +32,143 @@ export class ParserService {
   }
 
   private analyzeExecutionFlow(ast: any) {
-    const executionPlan: any = [];
+    const executionPlan: any[] = [];
+    let asyncTaskCounter = 0;
 
-    // AST 순회하며 CallExpression 찾기
-    walk.simple(ast, {
-      CallExpression(node: any) {
-        // 1. setTimeout 감지 (MacroTask)
+    // 1. 초기 상태: "여기는 메인 스레드(Main)입니다."
+    const initialState = {
+      runContext: 'Main',
+      parentId: null,
+    };
+
+    // 2. 재귀 순회 (Recursive Walk) 시작
+    // walk.base를 ...로 복사해서 기본 순회 기능을 가져옵니다.
+    walk.recursive(ast, initialState, {
+      ...walk.base,
+
+      CallExpression(node: any, state: any, c: any) {
+        // c(node, state)는 "이 노드를 이 상태로 방문해라"라는 명령어입니다.
+
+        // [A] setTimeout 발견!
         if (node.callee.name === 'setTimeout') {
+          const id = `async-${++asyncTaskCounter}`;
+
+          // 계획표에 적기
           executionPlan.push({
+            id,
             type: 'MacroTask',
             phase: 'Timer',
             name: 'setTimeout',
             line: node.loc.start.line,
           });
+
+          // ★ 핵심: 자식(콜백 함수)에게 물려줄 "새로운 명찰" 만들기
+          const nextState = {
+            runContext: 'AsyncCallback',
+            parentId: id,
+          };
+
+          // 1. callee(함수 이름)는 현재 문맥 그대로 방문
+          c(node.callee, state);
+
+          // 2. 인자들(arguments) 방문
+          node.arguments.forEach((arg) => {
+            // 만약 인자가 함수라면(콜백), 새 명찰(nextState)을 달아줍니다.
+            if (
+              arg.type === 'ArrowFunctionExpression' ||
+              arg.type === 'FunctionExpression'
+            ) {
+              c(arg, nextState);
+            } else {
+              // 시간이 0초 같은 숫자라면 그냥 현재 문맥 유지
+              c(arg, state);
+            }
+          });
           return;
         }
 
-        // 2. process.nextTick 감지(MicroTask - High Priority)
+        // [B] process.nextTick 발견!
         if (
           node.callee.type === 'MemberExpression' &&
           node.callee.object.name === 'process' &&
           node.callee.property.name === 'nextTick'
         ) {
+          const id = `async-${++asyncTaskCounter}`;
           executionPlan.push({
+            id,
             type: 'MicroTask',
             priority: 'High',
             name: 'process.nextTick',
             line: node.loc.start.line,
           });
+
+          const nextState = { runContext: 'AsyncCallback', parentId: id };
+
+          c(node.callee, state);
+          node.arguments.forEach((arg) => {
+            if (
+              arg.type === 'ArrowFunctionExpression' ||
+              arg.type === 'FunctionExpression'
+            ) {
+              c(arg, nextState);
+            } else {
+              c(arg, state);
+            }
+          });
           return;
         }
 
-        // 3. Promise 감지 (MicroTask)
-        // 예: Promise.resolve().then(...) 형태 감지
-        // (단순화를 위해 'then' 메서드 호출을 감지하는 약식 로직)
+        // [C] Promise.then 발견!
         if (
           node.callee.type === 'MemberExpression' &&
           node.callee.property.name === 'then'
         ) {
+          const id = `async-${++asyncTaskCounter}`;
           executionPlan.push({
+            id,
             type: 'MicroTask',
             priority: 'Normal',
             name: 'Promise.then',
             line: node.loc.start.line,
           });
+
+          const nextState = { runContext: 'AsyncCallback', parentId: id };
+
+          c(node.callee, state); // Promise.resolve() 부분 탐색
+          node.arguments.forEach((arg) => {
+            if (
+              arg.type === 'ArrowFunctionExpression' ||
+              arg.type === 'FunctionExpression'
+            ) {
+              c(arg, nextState);
+            } else {
+              c(arg, state);
+            }
+          });
           return;
         }
 
-        // 4. 동기(Sync) 작업
+        // [D] 그 외: 일반 동기 함수 (console.log 등)
         let functionName = 'Anonymous';
-
-        if (node.callee.type === 'Identifier') {
-          functionName = node.callee.name;
-        } else if (node.callee.type === 'MemberExpression') {
+        if (node.callee.type === 'Identifier') functionName = node.callee.name;
+        else if (node.callee.type === 'MemberExpression') {
           functionName = `${node.callee.object.name}.${node.callee.property.name}`;
         }
 
         executionPlan.push({
           type: 'CallStack',
+          runContext: state.runContext, // ★ 부모가 물려준 명찰을 그대로 기록!
+          parentId: state.parentId, // ★ 부모 ID도 그대로 기록!
           name: functionName,
           line: node.loc.start.line,
         });
+
+        // 자식들도 현재 상태 그대로 계속 탐색
+        c(node.callee, state);
+        node.arguments.forEach((arg) => c(arg, state));
       },
     });
+
     return executionPlan;
   }
 }
