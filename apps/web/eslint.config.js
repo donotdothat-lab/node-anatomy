@@ -26,5 +26,8 @@ export default defineConfig([
         project: ["./tsconfig.node.json", "./tsconfig.app.json"],
       },
     },
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+    },
   },
 ]);
