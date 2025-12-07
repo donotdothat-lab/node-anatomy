@@ -35,25 +35,78 @@ export class ParserService {
     const executionPlan: any[] = [];
     let asyncTaskCounter = 0;
 
-    // 1. 초기 상태: "여기는 메인 스레드(Main)입니다."
     const initialState = {
       runContext: 'Main',
       parentId: null,
     };
 
-    // 2. 재귀 순회 (Recursive Walk) 시작
-    // walk.base를 ...로 복사해서 기본 순회 기능을 가져옵니다.
-    walk.recursive(ast, initialState, {
-      ...walk.base,
+    // 커스텀 Visitor 정의
+    const visitors = {
+      ...walk.base, // 기본 순회 로직 가져오기
 
+      // [핵심] 블록문({ ... })을 우리가 직접 순회합니다.
+      BlockStatement(node: any, state: any, c: any) {
+        const body = node.body;
+
+        // 블록 내부의 문장들을 하나씩 훑습니다.
+        for (let i = 0; i < body.length; i++) {
+          const stmt = body[i];
+
+          // 1. 만약 이 문장이 'ExpressionStatement'이고, 그 안에 'AwaitExpression'이 있다면?
+          // (예: await foo();)
+          if (
+            stmt.type === 'ExpressionStatement' &&
+            stmt.expression.type === 'AwaitExpression'
+          ) {
+            const awaitNode = stmt.expression;
+
+            // 1-1. Await의 대상(인자) 먼저 방문 (예: Promise.resolve())
+            c(awaitNode.argument, state);
+
+            // 1-2. 'await' 자체를 MicroTask로 등록 (일시정지 지점)
+            const id = `async-${++asyncTaskCounter}`;
+            executionPlan.push({
+              id,
+              type: 'MicroTask',
+              name: 'await', // "일시정지 & 복귀" 작업
+              line: stmt.loc.start.line,
+              phase: 'Await Resume',
+            });
+
+            // 1-3. [Continuation] 남은 코드들을 묶어서 '뒷수습'으로 만듦
+            const remainingStatements = body.slice(i + 1);
+
+            if (remainingStatements.length > 0) {
+              const nextState = {
+                runContext: 'AsyncCallback', // 문맥 전환!
+                parentId: id, // await가 끝나면 실행될 녀석들
+              };
+
+              // 남은 문장들을 '가상의 블록'으로 취급하고 순회
+              remainingStatements.forEach((s) => c(s, nextState));
+            }
+
+            // [중요] 루프 종료!
+            // 뒷부분은 이미 nextState로 처리했으므로, 현재 루프(Main Context)에서는 더 이상 진행하면 안 됨.
+            return;
+          }
+
+          // 2. 일반 문장이면 그냥 방문
+          c(stmt, state);
+        }
+      },
+
+      // AwaitExpression 처리 (블록 밖이나 변수 할당 등에서 쓰일 때)
+      AwaitExpression(node: any, state: any, c: any) {
+        // 인자만 방문하고 넘어감 (복잡한 할당 구문 등은 MVP 범위 밖이므로 단순 처리)
+        c(node.argument, state);
+      },
+
+      // 기존 로직들 (setTimeout, Promise, etc)
       CallExpression(node: any, state: any, c: any) {
-        // c(node, state)는 "이 노드를 이 상태로 방문해라"라는 명령어입니다.
-
-        // [A] setTimeout 발견!
+        // [A] setTimeout
         if (node.callee.name === 'setTimeout') {
           const id = `async-${++asyncTaskCounter}`;
-
-          // 계획표에 적기
           executionPlan.push({
             id,
             type: 'MacroTask',
@@ -61,79 +114,29 @@ export class ParserService {
             name: 'setTimeout',
             line: node.loc.start.line,
           });
-
-          // ★ 핵심: 자식(콜백 함수)에게 물려줄 "새로운 명찰" 만들기
-          const nextState = {
-            runContext: 'AsyncCallback',
-            parentId: id,
-          };
-
-          // 1. callee(함수 이름)는 현재 문맥 그대로 방문
-          c(node.callee, state);
-
-          // 2. 인자들(arguments) 방문
-          node.arguments.forEach((arg) => {
-            // 만약 인자가 함수라면(콜백), 새 명찰(nextState)을 달아줍니다.
-            if (
-              arg.type === 'ArrowFunctionExpression' ||
-              arg.type === 'FunctionExpression'
-            ) {
-              c(arg, nextState);
-            } else {
-              // 시간이 0초 같은 숫자라면 그냥 현재 문맥 유지
-              c(arg, state);
-            }
-          });
-          return;
-        }
-
-        // [B] process.nextTick 발견!
-        if (
-          node.callee.type === 'MemberExpression' &&
-          node.callee.object.name === 'process' &&
-          node.callee.property.name === 'nextTick'
-        ) {
-          const id = `async-${++asyncTaskCounter}`;
-          executionPlan.push({
-            id,
-            type: 'MicroTask',
-            priority: 'High',
-            name: 'process.nextTick',
-            line: node.loc.start.line,
-          });
-
           const nextState = { runContext: 'AsyncCallback', parentId: id };
-
           c(node.callee, state);
           node.arguments.forEach((arg) => {
             if (
-              arg.type === 'ArrowFunctionExpression' ||
-              arg.type === 'FunctionExpression'
-            ) {
+              ['ArrowFunctionExpression', 'FunctionExpression'].includes(
+                arg.type,
+              )
+            )
               c(arg, nextState);
-            } else {
-              c(arg, state);
-            }
+            else c(arg, state);
           });
           return;
         }
 
-        // [C] Promise 체이닝 감지 (.then / .catch / .finally)
+        // [B] Promise.then / catch
         if (
           node.callee.type === 'MemberExpression' &&
-          (node.callee.property.name === 'then' ||
-            node.callee.property.name === 'catch' ||
-            node.callee.property.name === 'finally')
+          ['then', 'catch', 'finally'].includes(node.callee.property.name)
         ) {
           const id = `async-${++asyncTaskCounter}`;
+          c(node.callee.object, state); // 체이닝 앞부분 먼저
 
-          // 먼저 안쪽(이전 체인)으로 파고들기
-          // 이렇게 해야 이전 .then() 들이 먼저 배열에 담기게 됨.
-          c(node.callee.object, state);
-
-          // 돌아오면 기록
           const methodName = `Promise.${node.callee.property.name}`;
-
           executionPlan.push({
             id,
             type: 'MicroTask',
@@ -143,41 +146,59 @@ export class ParserService {
           });
 
           const nextState = { runContext: 'AsyncCallback', parentId: id };
-
           node.arguments.forEach((arg) => {
             if (
-              arg.type === 'ArrowFunctionExpression' ||
-              arg.type === 'FunctionExpression'
-            ) {
+              ['ArrowFunctionExpression', 'FunctionExpression'].includes(
+                arg.type,
+              )
+            )
               c(arg, nextState);
-            } else {
-              c(arg, state);
-            }
+            else c(arg, state);
           });
           return;
         }
 
-        // [D] 그 외: 일반 동기 함수 (console.log 등)
+        // [C] 일반 함수 호출
         let functionName = 'Anonymous';
         if (node.callee.type === 'Identifier') functionName = node.callee.name;
         else if (node.callee.type === 'MemberExpression') {
           functionName = `${node.callee.object.name}.${node.callee.property.name}`;
         }
 
+        // 🔍 [NEW] 인자 추출 로직
+        const args = node.arguments
+          .map((arg) => {
+            if (arg.type === 'Literal') {
+              // 문자열이면 따옴표 붙여서 표시
+              return typeof arg.value === 'string'
+                ? `'${arg.value}'`
+                : String(arg.value);
+            }
+            if (arg.type === 'Identifier') return arg.name; // 변수명
+            if (
+              arg.type === 'ArrowFunctionExpression' ||
+              arg.type === 'FunctionExpression'
+            )
+              return '() => { ... }';
+            return 'expr'; // 복잡한 수식 등
+          })
+          .join(', ');
+
         executionPlan.push({
           type: 'CallStack',
-          runContext: state.runContext, // ★ 부모가 물려준 명찰을 그대로 기록!
-          parentId: state.parentId, // ★ 부모 ID도 그대로 기록!
+          runContext: state.runContext,
+          parentId: state.parentId,
           name: functionName,
+          args: args, // ★ 데이터를 추가합니다!
           line: node.loc.start.line,
         });
 
-        // 자식들도 현재 상태 그대로 계속 탐색
         c(node.callee, state);
         node.arguments.forEach((arg) => c(arg, state));
       },
-    });
+    };
 
+    walk.recursive(ast, initialState, visitors);
     return executionPlan;
   }
 }

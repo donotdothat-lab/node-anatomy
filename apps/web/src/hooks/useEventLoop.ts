@@ -9,6 +9,7 @@ export interface Task {
   priority?: string;
   name: string;
   line: number;
+  args?: string;
 }
 
 export const useEventLoop = () => {
@@ -99,11 +100,11 @@ export const useEventLoop = () => {
         }
       }
 
-      await sleep(600); // 실행 시간 시뮬레이션
+      await sleep(1000); // 실행 시간 시뮬레이션
 
       // 3. Stack에서 제거
       setCallStack([]);
-      await sleep(200);
+      await sleep(400);
     };
 
     // === PHASE 1: Main Script ===

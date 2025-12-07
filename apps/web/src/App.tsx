@@ -20,18 +20,30 @@ const TaskCard = ({ task }: { task: Task }) => {
       className={`p-3 mb-2 rounded border-l-4 ${theme} font-mono text-sm shadow-sm`}
     >
       <div className="flex justify-between items-center mb-1">
-        <span className="font-bold truncate mr-2">{task.name}</span>
-        <span className="text-[10px] opacity-50">L{task.line}</span>
+        <div className="flex items-center gap-2 truncate mr-2">
+          <span className="font-bold">{task.name}</span>
+          {task.args && (
+            <span className="text-xs text-gray-400 truncate max-w-[150px]">
+              ({task.args})
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] opacity-50 whitespace-nowrap">
+          L{task.line}
+        </span>
       </div>
     </motion.div>
   );
 };
 
 function App() {
-  const [code, setCode] = useState<string>(`console.log('Start');
-setTimeout(() => { console.log('Timeout'); }, 0);
-Promise.resolve().then(() => console.log('Promise'));
-console.log('End');`);
+  const [code, setCode] = useState<string>(`async function test() {
+  console.log('A');
+  await Promise.resolve(); // 여기서 끊겨야 함
+  console.log('B');        // 얘는 Await의 콜백(MicroTask)이 되어야 함
+}
+test();
+console.log('C');`);
 
   // 커스텀 훅 장착!
   const {
