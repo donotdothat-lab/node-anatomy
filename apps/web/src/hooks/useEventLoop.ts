@@ -1,6 +1,5 @@
-import { useState, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 
-// 데이터 타입 정의 (백엔드와 맞춤)
 export interface Task {
   id?: string;
   type: "CallStack" | "MacroTask" | "MicroTask";
@@ -13,102 +12,136 @@ export interface Task {
 }
 
 export const useEventLoop = () => {
-  // [1] 가상 메모리 상태 (State)
   const [callStack, setCallStack] = useState<Task[]>([]);
   const [microQueue, setMicroQueue] = useState<Task[]>([]);
   const [macroQueue, setMacroQueue] = useState<Task[]>([]);
-
-  // 현재 실행 중인 단계 (Step)
   const [logs, setLogs] = useState<string[]>([]);
   const [isRunning, setIsRunning] = useState(false);
 
-  // 원본 데이터 저장소
-  const [scenario, setScenario] = useState<{
-    mainScript: Task[]; // 메인 스레드에서 실행될 코드들
-    callbackMap: Map<string, Task[]>; // 비동기 ID별로 예약된 콜백들
+  // [핵심] 상태의 최신 값을 참조하기 위한 Refs
+  const microQueueRef = useRef<Task[]>([]);
+  const macroQueueRef = useRef<Task[]>([]);
+  const scenarioRef = useRef<{
+    mainScript: Task[];
+    callbackMap: Map<string, Task[]>;
   } | null>(null);
 
-  // 시뮬레이션 초기화 (데이터 파싱)
+  // 큐 상태를 업데이트할 때 Ref도 같이 업데이트하는 헬퍼
+  const updateMicroQueue = (tasks: Task[]) => {
+    setMicroQueue(tasks);
+    microQueueRef.current = tasks;
+  };
+  const updateMacroQueue = (tasks: Task[]) => {
+    setMacroQueue(tasks);
+    macroQueueRef.current = tasks;
+  };
+
   const initialize = useCallback((analysisData: Task[]) => {
     const mainScript: Task[] = [];
     const callbackMap = new Map<string, Task[]>();
 
-    // 1. 데이터를 "메인"과 "콜백"으로 분류
     analysisData.forEach((task) => {
       if (task.runContext === "Main" || !task.parentId) {
-        mainScript.push(task); // 메인 스레드 작업
+        mainScript.push(task);
       } else {
-        // 콜백 작업들은 부모 ID별로 묶어서 저장
         const pid = task.parentId;
         const existing = callbackMap.get(pid) || [];
         callbackMap.set(pid, [...existing, task]);
       }
     });
 
-    setScenario({ mainScript, callbackMap });
+    scenarioRef.current = { mainScript, callbackMap };
+
+    // 초기화
     setCallStack([]);
-    setMicroQueue([]);
-    setMacroQueue([]);
-    setLogs(["Analysis loaded. Ready to run."]);
+    updateMicroQueue([]);
+    updateMacroQueue([]);
+    setLogs(["Analysis loaded. Ready."]);
     setIsRunning(false);
   }, []);
 
-  // [2] 시뮬레이션 실행기 (The Engine)
   const runSimulation = async () => {
-    if (!scenario) return;
+    if (!scenarioRef.current) return;
     setIsRunning(true);
-    setLogs((prev) => [...prev, "🚀 V8 Engine Started..."]);
+    setLogs((p) => [...p, "🚀 Engine Start!"]);
 
-    // Helper: 잠시 멈춤 (애니메이션 볼 시간 확보)
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-    // --- Phase 1: Main Script Execution ---
-    for (const task of scenario.mainScript) {
-      // 1. 스택에 푸시
-      setCallStack((prev) => [...prev, task]);
-      await sleep(800);
+    // [Helper] 작업 실행 및 자식 스케줄링
+    const executeTask = async (task: Task) => {
+      // 1. Call Stack에 올림 (실행 모습)
+      setCallStack([task]);
 
-      // 2. 비동기 트리거라면? (큐에 예약)
-      if (task.type !== "CallStack" && task.id) {
-        const callbacks = scenario.callbackMap.get(task.id) || [];
+      // 2. 자식(Callback) 스케줄링 확인
+      if (task.id) {
+        const callbacks = scenarioRef.current?.callbackMap.get(task.id) || [];
 
-        if (task.type === "MicroTask") {
-          setMicroQueue((prev) => [...prev, ...callbacks]); // 단순화를 위해 콜백 내용 자체를 큐에 넣음
-          setLogs((prev) => [...prev, `✨ MicroTask Scheduled: ${task.name}`]);
-        } else {
-          setMacroQueue((prev) => [...prev, ...callbacks]);
-          setLogs((prev) => [...prev, `⏰ MacroTask Scheduled: ${task.name}`]);
+        if (callbacks.length > 0) {
+          // [수정된 로직] 부모의 타입에 따라 자식들을 해당 큐로 보냄
+
+          // Case A: 부모가 마이크로 태스크 (Promise, nextTick)
+          if (task.type === "MicroTask") {
+            updateMicroQueue([...microQueueRef.current, ...callbacks]);
+            setLogs((p) => [
+              ...p,
+              `✨ Scheduled ${callbacks.length} MicroTasks (by ${task.name})`,
+            ]);
+          }
+          // Case B: 부모가 매크로 태스크 (setTimeout)
+          else if (task.type === "MacroTask") {
+            updateMacroQueue([...macroQueueRef.current, ...callbacks]);
+            setLogs((p) => [
+              ...p,
+              `⏰ Scheduled ${callbacks.length} MacroTasks (by ${task.name})`,
+            ]);
+          }
+          // (CallStack 타입이 비동기 ID를 가진 경우는 거의 없지만, 있다면 처리 로직 추가 가능)
         }
       }
 
-      // 3. 스택에서 팝 (실행 완료)
-      setCallStack((prev) => prev.slice(0, -1));
-      await sleep(500);
+      await sleep(600); // 실행 시간 시뮬레이션
+
+      // 3. Stack에서 제거
+      setCallStack([]);
+      await sleep(200);
+    };
+
+    // === PHASE 1: Main Script ===
+    for (const task of scenarioRef.current.mainScript) {
+      await executeTask(task);
+    }
+    setLogs((p) => [...p, "✅ Main Script Done. Event Loop Running..."]);
+    await sleep(500);
+
+    // === PHASE 2: Event Loop ===
+    // 조건: 큐가 다 빌 때까지 반복
+    while (
+      microQueueRef.current.length > 0 ||
+      macroQueueRef.current.length > 0
+    ) {
+      // Rule 1: MicroTask Queue가 비어있지 않으면 다 털어버린다.
+      if (microQueueRef.current.length > 0) {
+        const task = microQueueRef.current[0]; // Peek
+        updateMicroQueue(microQueueRef.current.slice(1)); // Shift
+
+        setLogs((p) => [...p, `⚡ Run Micro: ${task.name}`]);
+        await executeTask(task);
+        continue; // 다시 루프 처음으로 (마이크로가 또 생겼을 수도 있으니까)
+      }
+
+      // Rule 2: Micro가 비었으면 Macro 하나를 실행한다.
+      if (macroQueueRef.current.length > 0) {
+        const task = macroQueueRef.current[0];
+        updateMacroQueue(macroQueueRef.current.slice(1));
+
+        setLogs((p) => [...p, `🐢 Run Macro: ${task.name}`]);
+        await executeTask(task);
+        // 매크로 하나 실행 후엔 다시 루프 처음으로 가서 마이크로를 확인한다 (중요!)
+        continue;
+      }
     }
 
-    setLogs((prev) => [...prev, "✅ Main Script Done. Checking Queues..."]);
-    await sleep(1000);
-
-    // --- Phase 2: Event Loop (Queue Consumption) ---
-    // (간단한 버전: 마이크로 큐 다 비우고 -> 매크로 큐 하나 실행 -> 반복)
-
-    // 재귀적으로 큐를 비우는 함수가 필요하지만,
-    // 지금은 간단하게 "남은 큐 털기"로 구현합니다.
-
-    // 1. MicroTask Queue 비우기
-    while (true) {
-      // State updater의 비동기성 때문에 실제 구현은 ref나 더 정교한 로직이 필요하지만
-      // 지금은 시각적 연출을 위해 임시 변수 사용 없이 setState 콜백 패턴 활용 불가하므로
-      // 개념적 시퀀스로 구현합니다. (실제로는 useEffect나 reducer로 해야 완벽함)
-      // -> *MVP 단계에서는 일단 '보여주기식' 루프로 갑니다.*
-
-      // *주의: 리액트 상태는 즉시 반영 안 되므로, 이 방식은 데모용입니다.
-      // 완벽한 구현을 위해선 'Step' 기반 상태 머신으로 가야 합니다.
-      // 오늘은 '맛보기'로 갑시다.
-      break;
-    }
-
-    // (일단 엔진 뼈대만 잡고, 실제 루프 로직은 다음 단계에서 완성합시다)
+    setLogs((p) => [...p, "🎉 All Done!"]);
     setIsRunning(false);
   };
 
